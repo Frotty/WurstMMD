@@ -15,7 +15,6 @@ constant int MINIMUM_PARSER_VERSION = 1
 constant string FILENAME = "MMD.Dat"
 constant string M_KEY_VAL = "val:"
 constant string M_KEY_CHK = "chk:"
-constant int MAX_EMITTERS = 3
 int num_msg = 0        
 
 public enum Goal
@@ -175,15 +174,12 @@ function player.sendMmdMessage(string key, string message, int checksum)
     gc.syncInt(M_KEY_VAL + key, message)
     gc.syncInt(M_KEY_CHK + key, key)
 
-/**Sends redundantly through up to three deterministically selected active users.*/
-function sendMmdMessageRedundantly(string key, string message, int checksum)
-  var emitters = 0
+/**Returns the first active user slot. Every client resolves the same player.*/
+function getEmitter() returns player
   for i = 0 to 23
     if GetPlayerController(players[i]) == MAP_CONTROL_USER and GetPlayerSlotState(players[i]) == PLAYER_SLOT_STATE_PLAYING
-      players[i].sendMmdMessage(key, message, checksum)
-      emitters++
-      if emitters >= MAX_EMITTERS
-        return
+      return players[i]
+  return null
 
 /**Places meta-data in the replay and in network traffic*/
 function emit(string message)
@@ -194,7 +190,9 @@ function emit(string message)
   let key = num_msg.toString()
   let checksum = poorHash(message, num_msg)
   num_msg++
-  sendMmdMessageRedundantly(key, message, checksum)
+  let emitter = getEmitter()
+  if emitter != null
+    emitter.sendMmdMessage(key, message, checksum)
     
 /**Replaces control characters with escape sequences*/
 function pack(string value) returns string
