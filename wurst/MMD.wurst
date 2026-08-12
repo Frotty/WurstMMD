@@ -156,7 +156,7 @@ function c2i(string c) returns int
       i++
   return i
 
-/**Computes a weak hash value, hopefully secure enough for our purposes*/
+/**Computes the legacy protocol checksum. This is message framing, not tamper protection.*/
 function poorHash(string s, int seed) returns int
   let n = s.length()
   var m = n + seed
