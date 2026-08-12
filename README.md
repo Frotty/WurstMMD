@@ -8,6 +8,12 @@ inside a `GetLocalPlayer()`/`localPlayer` branch or from another local-only UI o
 input callback. The library cannot reliably detect or repair a different message
 sequence on different clients.
 
+The library selects the lowest-id active user slot synchronously and emits each
+message only from that player's client. It intentionally has no delayed
+tamper-detection, retry queue, randomized sender voting, or guard escalation.
+Those mechanisms cannot protect a modified map and must not introduce local
+timer or RNG behavior into a lockstep game.
+
 MMD starts on a zero-second timer. Do not define values/events or emit data
 directly during map/package initialization. Register setup with
 `MMD.onInitialized` instead:
