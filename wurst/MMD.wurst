@@ -15,6 +15,7 @@ constant int MINIMUM_PARSER_VERSION = 1
 constant string FILENAME = "MMD.Dat"
 constant string M_KEY_VAL = "val:"
 constant string M_KEY_CHK = "chk:"
+constant real MMD_CACHE_RETENTION = 7.0
 int num_msg = 0        
 
 public enum Goal
@@ -193,6 +194,13 @@ function emit(string message)
   let emitter = getEmitter()
   if emitter != null
     emitter.sendMmdMessage(key, message, checksum)
+
+  // SyncStoredInteger completes before later game actions are processed. Keep the
+  // cells around briefly so every client can receive the sync, then release them
+  // on every client, including clients that did not emit the message.
+  doAfter(MMD_CACHE_RETENTION) ->
+    gc.flushInt(M_KEY_VAL + key, message)
+    gc.flushInt(M_KEY_CHK + key, key)
     
 /**Replaces control characters with escape sequences*/
 function pack(string value) returns string
