@@ -90,3 +90,12 @@ import MMD
 
 MMD.logCustom("build", "v1.2.3")
 ```
+
+
+Use `MMD.logCustomToken` when both arguments are nonempty ASCII tokens drawn
+from `[A-Za-z0-9_~-]`. This uses the same wire framing and checksum as
+`logCustom` without escaping either token.
+
+To turn off replay emission in a build, override the `MMD_ENABLED` config
+constant. Initialization callbacks still run. Disabled value and event
+definitions return null.

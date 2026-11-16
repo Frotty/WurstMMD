@@ -1,6 +1,8 @@
 package MMD
 import ClosureTimers
 import ErrorHandling
+import ArrayList
+import StringUtils
 
 constant string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+= \\!@#$%^&*()/?>.<,;:'\"{}[]|`~"
 constant int num_chars = chars.length()
@@ -8,7 +10,7 @@ boolean initialized = false
 trigger g_initializedTrigger = CreateTrigger()
         
 gamecache gc = null
-constant string ESCAPED_CHARS = " \\"
+@configurable public constant MMD_ENABLED = true
 
 constant int CURRENT_VERSION = 1
 constant int MINIMUM_PARSER_VERSION = 1
@@ -16,6 +18,11 @@ constant string FILENAME = "MMD.Dat"
 constant string M_KEY_VAL = "val:"
 constant string M_KEY_CHK = "chk:"
 constant real MMD_CACHE_RETENTION = 7.0
+let tokenChecksumDigits = new ArrayList<int>(127)
+var recentMessages = new ArrayList<string>()
+var retainedMessages = new ArrayList<string>()
+int firstRetainedMessage = 0
+boolean cleanupScheduled = false
 int num_msg = 0        
 
 public enum Goal
@@ -136,8 +143,11 @@ class Event implements IMMDEvent
 
 /**Initializes the char-to-int conversion*/
 function prepC2I()
+  for charCode = 0 to 126
+    tokenChecksumDigits.add(0)
   for i = 0 to num_chars-1
     var id = SubString(chars, i, i+1)
+    tokenChecksumDigits.set(id.toChar().toInt(), i)
     if (id == StringCase(id, true))
       id += "U"
     gc.saveInt("c2i", id, i)
@@ -182,41 +192,63 @@ function getEmitter() returns player
       return players[i]
   return null
 
-/**Places meta-data in the replay and in network traffic*/
-function emit(string message)
-  if (not initialized)
+/** Flush messages only after they have spent a full sweep interval in the retained buffer. */
+function sweepMmdCache()
+  for i = 0 to retainedMessages.size() - 1
+    let key = (firstRetainedMessage + i).toString()
+    gc.flushInt(M_KEY_VAL + key, retainedMessages.get(i))
+    gc.flushInt(M_KEY_CHK + key, key)
+  firstRetainedMessage += retainedMessages.size()
+  retainedMessages.clear()
+  if recentMessages.isEmpty()
+    cleanupScheduled = false
+    return
+  let cleared = retainedMessages
+  retainedMessages = recentMessages
+  recentMessages = cleared
+  doAfter(MMD_CACHE_RETENTION) ->
+    sweepMmdCache()
+
+function tokenHash(string message, int seed) returns int
+  let length = message.length()
+  var checksum = length + seed
+  for i = 0 to length - 1
+    checksum = checksum * 41 + tokenChecksumDigits.get(message.charAt(i).toChar().toInt())
+  return checksum
+
+/** Places meta-data in the replay and in network traffic. */
+function emit(string message, boolean asciiToken)
+  if not MMD_ENABLED
+    return
+  if not initialized
     BJDebugMsg("MMD Emit Error: Library not initialized yet.")
+    return
+  let emitter = getEmitter()
+  if emitter == null
     return
 
   let key = num_msg.toString()
-  let checksum = poorHash(message, num_msg)
+  let checksum = asciiToken ? tokenHash(message, num_msg) : poorHash(message, num_msg)
   num_msg++
-  let emitter = getEmitter()
-  if emitter != null
-    emitter.sendMmdMessage(key, message, checksum)
+  emitter.sendMmdMessage(key, message, checksum)
 
-  // SyncStoredInteger completes before later game actions are processed. Keep the
-  // cells around briefly so every client can receive the sync, then release them
-  // on every client, including clients that did not emit the message.
-  doAfter(MMD_CACHE_RETENTION) ->
-    gc.flushInt(M_KEY_VAL + key, message)
-    gc.flushInt(M_KEY_CHK + key, key)
-    
-/**Replaces control characters with escape sequences*/
+  recentMessages.add(message)
+  if not cleanupScheduled
+    cleanupScheduled = true
+    doAfter(MMD_CACHE_RETENTION) ->
+      sweepMmdCache()
+
+function emit(string message)
+  emit(message, false)
+
+/** Replaces control characters with escape sequences. */
 function pack(string value) returns string
   var result = ""
-  let valueLen = value.length()
-  let escapedCharsLen = ESCAPED_CHARS.length()  
-  //for each character in argument string
-  for i = 0 to valueLen-1
-    var c = SubString(value, i, i+1)
-    //for each character in escaped chars string
-    for j = 0 to escapedCharsLen-1
-      //escape control characters
-      if (c == SubString(ESCAPED_CHARS, j, j+1))
-        c = "\\" + c
-        break
-    result += c    
+  for i = 0 to value.length() - 1
+    let c = value.charAt(i)
+    if c == " " or c == "\\"
+      result += "\\"
+    result += c
   return result
 
 ///////////////////////////////////////////////////////////////
@@ -236,6 +268,8 @@ public class MMD
 
   /**Sets a player flag like "win_on_leave"*/
   static function flagPlayer(player p, PlayerFlag flag)
+    if not MMD_ENABLED
+      return
     let id = p.getId()
     if id < 0 or id >= 24
       BJDebugMsg("MMD Flag Error: Invalid player. Must be P1 to P24.")
@@ -248,6 +282,8 @@ public class MMD
 
   /**Defines a variable to store string values in*/
   static function defineStringValue(string name, Suggestion suggestion) returns IMMDValueString
+    if not MMD_ENABLED
+      return null
     if (name == "" or name == null)
       error("MMD: value name is empty")
     if (name.length() > 32)
@@ -267,6 +303,8 @@ public class MMD
 
   /**Defines a variable to store integer values in*/
   static function defineValueInt(string name, Goal goal, Suggestion suggestion) returns IMMDValueInt
+    if not MMD_ENABLED
+      return null
     if (name == "" or name == null)
       error("MMD: value name is empty")
     if (name.length() > 32)
@@ -286,6 +324,8 @@ public class MMD
 
   /**Defines a variable to store real values in*/
   static function defineValueReal(string name, Goal goal, Suggestion suggestion) returns IMMDValueReal
+    if not MMD_ENABLED
+      return null
     if (name == "" or name == null)
       error("MMD: value name is empty")
     if (name.length() > 32)
@@ -318,6 +358,8 @@ public class MMD
     
   /**Updates the value of a defined variable for a given player*/
   private static function updateValue(string name, player p, string op, string value, ValueType _type)
+    if not MMD_ENABLED
+      return
     let id = p.getId()
     if p == null or id < 0 or id >= 24
       //BJDebugMsg("MMD Set Error: Invalid player. Must be P1 to P24.")
@@ -351,6 +393,8 @@ public class MMD
 
   /**Defines an event's arguments and format*/
   private static function defineEvent(string name, int num_args, string format, string data) returns IMMDEvent
+    if not MMD_ENABLED
+      return null
     if gc.loadInt("events", name) != 0
       BJDebugMsg("MMD DefEvent Error: Event redefined.")
     else
@@ -373,6 +417,8 @@ public class MMD
 
   /**Places an event in the meta-data*/
   private static function logEvent(string name, int num_args, string data)
+    if not MMD_ENABLED
+      return
     if gc.loadInt("events", name) != num_args+1
       BJDebugMsg("MMD logEvent Error: Event not defined or defined with different # of args.")
     else
@@ -392,6 +438,8 @@ public class MMD
 
   /**Defines an event's arguments and format*/
   private static function defineSetting(string name, ValueType _type, string value)
+    if not MMD_ENABLED
+      return
     if gc.loadInt("setting", name) != 0
       BJDebugMsg("MMD DefSetting Error: Setting redefined.")
     else
@@ -400,7 +448,14 @@ public class MMD
 
   /**Emits meta-data which parsers will ignore unless they are customized to understand it*/
   static function logCustom(string unique_identifier, string data)
+    if not MMD_ENABLED
+      return
     Emitter.emitCustom(pack(unique_identifier), pack(data))
+
+  /** Fast path for a nonempty ASCII identifier and payload made of [A-Za-z0-9_~-].
+      Prefer logCustom for arbitrary payloads, which require escaping. */
+  static function logCustomToken(string identifier, string data)
+    emit("custom " + identifier + " " + data, true)
 
 class Emitter
 
@@ -434,18 +489,20 @@ class Emitter
 function init2()
   initialized = true
     
-  emit("init version " + I2S(MINIMUM_PARSER_VERSION) + " " + I2S(CURRENT_VERSION))
+  if MMD_ENABLED
+    emit("init version " + I2S(MINIMUM_PARSER_VERSION) + " " + I2S(CURRENT_VERSION))
 
-  for i = 0 to 23
-    let p = players[i]
-    if GetPlayerController(p) == MAP_CONTROL_USER and GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING
-      emit("init pid " + I2S(i) + " " + pack(GetPlayerName(p)))
+    for i = 0 to 23
+      let p = players[i]
+      if GetPlayerController(p) == MAP_CONTROL_USER and GetPlayerSlotState(p) == PLAYER_SLOT_STATE_PLAYING
+        emit("init pid " + I2S(i) + " " + pack(GetPlayerName(p)))
 
   g_initializedTrigger.execute()
 
 ///Places init2 on a timer, initializes game cache, and translates constants*/
 init
   nullTimer(() -> init2())
-  FlushGameCache(InitGameCache(FILENAME))
-  gc = InitGameCache(FILENAME)
-  prepC2I()
+  if MMD_ENABLED
+    FlushGameCache(InitGameCache(FILENAME))
+    gc = InitGameCache(FILENAME)
+    prepC2I()
